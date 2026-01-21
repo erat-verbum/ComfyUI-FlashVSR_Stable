@@ -445,10 +445,11 @@ class FrameReader:
     """
     Iterator that reads image frames from a folder.
     """
-    def __init__(self, frames_folder, start_frame=0, end_frame=-1, chunk_size=0):
+    def __init__(self, frames_folder, start_frame=0, end_frame=-1, chunk_size=0, exclude_folder=None):
         import numpy as np
         from PIL import Image
         import glob
+        import os
         
         self.frames_folder = frames_folder
         self.start_frame = start_frame
@@ -456,6 +457,7 @@ class FrameReader:
         self.chunk_size = chunk_size
         self.current_frame_idx = 0
         self.current_frame = 0
+        self.exclude_folder = exclude_folder
         
         if not os.path.exists(frames_folder):
             raise FileNotFoundError(f"Input frames folder not found: {frames_folder}")
@@ -466,6 +468,26 @@ class FrameReader:
         for ext in supported_extensions:
             frame_files.extend(glob.glob(os.path.join(frames_folder, ext)))
         
+        # Filter out files from the exclude folder if specified
+        if exclude_folder and frame_files:
+            exclude_path = os.path.abspath(exclude_folder)
+            filtered_files = []
+            for file_path in frame_files:
+                file_path_abs = os.path.abspath(file_path)
+                # Check if file is in the excluded folder
+                try:
+                    relative_path = os.path.relpath(file_path_abs, exclude_path)
+                    if relative_path.startswith(os.pardir):
+                        # File is not in excluded folder, keep it
+                        filtered_files.append(file_path)
+                    else:
+                        # File is in excluded folder, skip it
+                        print(f"Warning: Skipping file '{file_path}' as it's in the excluded output folder")
+                except ValueError:
+                    # File is not under exclude_path, keep it
+                    filtered_files.append(file_path)
+            frame_files = filtered_files
+        
         if not frame_files:
             raise RuntimeError(f"No image files found in folder: {frames_folder}")
         
@@ -474,10 +496,13 @@ class FrameReader:
         self.frame_files = frame_files
         self.total_frames = len(frame_files)
         
+        # Log which files were found
+        print(f"FrameReader found {len(frame_files)} files in {frames_folder}")
+        
         # Adjust end_frame
         if self.end_frame < 0 or self.end_frame > self.total_frames:
             self.end_frame = self.total_frames
-            
+             
         if self.start_frame >= self.total_frames:
             print(f"Warning: Start frame {self.start_frame} is beyond total frames {self.total_frames}.")
             self.end_frame = self.start_frame # Nothing to process
@@ -639,6 +664,23 @@ def main():
             if os.listdir(args.output_frames):
                 print(f"Warning: Output folder '{args.output_frames}' already exists and is not empty.", file=sys.stderr)
                 print("Existing files may be overwritten.", file=sys.stderr)
+        
+        # Check if output folder is a subfolder of input folder - this can cause infinite loops
+        input_path = os.path.abspath(args.input_frames)
+        output_path = os.path.abspath(args.output_frames)
+        
+        # Check if output is a subdirectory of input
+        try:
+            relative_path = os.path.relpath(output_path, input_path)
+            if not relative_path.startswith(os.pardir):
+                # Output is a subfolder of input - this is dangerous
+                print(f"Error: Output folder '{output_path}' is a subfolder of input folder '{input_path}'", file=sys.stderr)
+                print("This configuration can cause infinite loops or duplicate processing.", file=sys.stderr)
+                print("Please choose a different output folder outside the input folder hierarchy.", file=sys.stderr)
+                sys.exit(1)
+        except ValueError:
+            # This happens when output_path is not under input_path - which is good
+            pass
 
     # Handle boolean flag pairs
     force_offload = args.force_offload and not args.no_force_offload
@@ -716,7 +758,8 @@ def main():
             args.input_frames,
             start_frame=args.start_frame,
             end_frame=args.end_frame,
-            chunk_size=args.frame_chunk_size
+            chunk_size=args.frame_chunk_size,
+            exclude_folder=args.output_frames  # Pass output folder to exclude
         )
         
         # For frame processing, we use a dummy FPS value
